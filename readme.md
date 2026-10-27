@@ -1,4 +1,4 @@
-# Production Deployment Setup — nasma-tech/rrf-erp-final
+# Production Deployment Setup — example-org/example-api
 
 Documentation only: no server changes have been performed.
 
@@ -6,21 +6,21 @@ Documentation only: no server changes have been performed.
 
 | Setting | Value |
 |---|---|
-| GitHub repository | `nasma-tech/rrf-erp-final` (private) |
-| Project slug | `rrf-erp-final` |
+| GitHub repository | `example-org/example-api` (private recommended; configurable) |
+| Project slug | `example-api` |
 | Server | `prod-01` |
-| Domain | `rrf-final.arasboil-erp.com` |
-| Checkout directory | `/var/www/php/rrf-final.arasboil-erp.com/sales` |
-| Deploy script | `/var/www/scripts/deploy-rrf-erp-final.sh` |
-| SSH alias | `github-rrf-erp-final` |
+| Domain | `api.example.com` |
+| Checkout directory | `/var/www/php/api.example.com` |
+| Deploy script | `/var/www/scripts/deploy-example-api.sh` |
+| SSH alias | `github-example-api` |
 | SSH server port | `22` |
-| GitHub read key | `/home/deploy/.ssh/github_rrf-erp-final_readonly` |
-| Actions login key | `/home/deploy/.ssh/gha_rrf-erp-final_prod` |
-| Docker project no. | `02` |
+| GitHub read key | `/home/deploy/.ssh/github_example-api_readonly` |
+| Actions login key | `/home/deploy/.ssh/gha_example-api_prod` |
+| Docker project no. | `01` |
 
 ## 1. Configure GitHub repository (manual)
 
-1. Create a **private** repository named `nasma-tech/rrf-erp-final`.
+1. Create a repository (private recommended for production code) named `example-org/example-api`.
 2. Create `main` and `develop` branches; set `main` as default.
 3. Import/review your rulesets: targets, enforcement, PR reviews, no force push,
    no deletion, and bypass permissions. Use a separate `pull_request` workflow
@@ -39,9 +39,9 @@ composer --version
 php -v
 sudo install -d -o deploy -g deploy -m 700 /home/deploy/.ssh
 sudo install -d -o root -g root -m 755 /var/www/scripts
-namei -l /var/www/php/rrf-final.arasboil-erp.com/sales
+namei -l /var/www/php/api.example.com
 # Apply an ACL only on the specific parent if deploy must create a new checkout:
-# sudo setfacl -m u:deploy:rwx /var/www/php/rrf-final.arasboil-erp.com
+# sudo setfacl -m u:deploy:rwx /var/www/php
 ```
 
 Never change ownership of all `/var/www`, and never use `chmod -R 777`.
@@ -57,8 +57,8 @@ Generate the key as `deploy` without overwriting existing keys:
 sudo -iu deploy
 umask 077
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
-ssh-keygen -t ed25519 -C 'prod-01/rrf-erp-final/server-to-github' -f /home/deploy/.ssh/github_rrf-erp-final_readonly -N ''
-cat /home/deploy/.ssh/github_rrf-erp-final_readonly.pub
+ssh-keygen -t ed25519 -C 'prod-01/example-api/server-to-github' -f /home/deploy/.ssh/github_example-api_readonly -N ''
+cat /home/deploy/.ssh/github_example-api_readonly.pub
 ```
 
 Add the public key to **this repository only** under Settings > Deploy keys;
@@ -69,10 +69,10 @@ https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/g
 Add the following block to `/home/deploy/.ssh/config` (preserve existing blocks):
 
 ```sshconfig
-Host github-rrf-erp-final
+Host github-example-api
     HostName github.com
     User git
-    IdentityFile /home/deploy/.ssh/github_rrf-erp-final_readonly
+    IdentityFile /home/deploy/.ssh/github_example-api_readonly
     IdentitiesOnly yes
     StrictHostKeyChecking yes
 ```
@@ -80,8 +80,8 @@ Host github-rrf-erp-final
 Test access *after* trusting GitHub's verified host key and adding the deploy key:
 
 ```bash
-sudo -iu deploy ssh -T github-rrf-erp-final
-sudo -iu deploy git ls-remote git@github-rrf-erp-final:nasma-tech/rrf-erp-final.git HEAD
+sudo -iu deploy ssh -T github-example-api
+sudo -iu deploy git ls-remote git@github-example-api:example-org/example-api.git HEAD
 ```
 
 ## 4. First checkout (manual safety checkpoint)
@@ -91,7 +91,7 @@ Do **not** clone or reset into an occupied production directory.
 If the target is new and its parent is writable by deploy:
 
 ```bash
-sudo -iu deploy git clone --branch main --single-branch git@github-rrf-erp-final:nasma-tech/rrf-erp-final.git /var/www/php/rrf-final.arasboil-erp.com/sales
+sudo -iu deploy git clone --branch main --single-branch git@github-example-api:example-org/example-api.git /var/www/php/api.example.com
 ```
 
 Transfer `.env` and runtime data from backup, then set permissions explicitly.
@@ -104,9 +104,9 @@ Do not run the deploy script until `main` contains real deployable code.
 ```bash
 sudo -iu deploy
 umask 077
-ssh-keygen -t ed25519 -C 'nasma-tech/rrf-erp-final/actions-to-prod-01' -f /home/deploy/.ssh/gha_rrf-erp-final_prod -N ''
+ssh-keygen -t ed25519 -C 'example-org/example-api/actions-to-prod-01' -f /home/deploy/.ssh/gha_example-api_prod -N ''
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
-PUBKEY="$(cat /home/deploy/.ssh/gha_rrf-erp-final_prod.pub)"
+PUBKEY="$(cat /home/deploy/.ssh/gha_example-api_prod.pub)"
 grep -qxF "$PUBKEY" ~/.ssh/authorized_keys || printf '%s\n' "$PUBKEY" >> ~/.ssh/authorized_keys
 ```
 
@@ -117,7 +117,7 @@ Set repository **Actions secrets** (never commit the private key):
 | `HOST` | Reachable production SSH host/IP |
 | `PORT` | `22` |
 | `USERNAME` | `deploy` |
-| `SSH_KEY` | Full private contents of `/home/deploy/.ssh/gha_rrf-erp-final_prod` |
+| `SSH_KEY` | Full private contents of `/home/deploy/.ssh/gha_example-api_prod` |
 | `SSH_HOST_FINGERPRINT` | Independently verified SSH *server host* fingerprint |
 
 Find the server's fingerprint as administrator (verify out of band):
@@ -131,7 +131,7 @@ Actions **private** key from the server. Keep its public key authorized.
 
 ## 6. Deployment script and workflow
 
-Place the generated deployment Bash script at `/var/www/scripts/deploy-rrf-erp-final.sh`, owned by root,
+Place the generated deployment Bash script at `/var/www/scripts/deploy-example-api.sh`, owned by root,
 mode 755. It executes as `deploy`; it uses flock, checks tracked changes,
 checks `.env`/Storage, verifies origin, fetches `main`, and runs Composer.
 Do not use `sudo` inside it. The script is designed for host PHP/Composer,
@@ -143,9 +143,9 @@ merge it via PR into `main`. It runs on push to `main` only.
 Example syntax check and controlled test:
 
 ```bash
-sudo -u deploy bash -n /var/www/scripts/deploy-rrf-erp-final.sh
+sudo -u deploy bash -n /var/www/scripts/deploy-example-api.sh
 # ONLY after backups and an explicit decision to deploy:
-# sudo -iu deploy bash /var/www/scripts/deploy-rrf-erp-final.sh
+# sudo -iu deploy bash /var/www/scripts/deploy-example-api.sh
 ```
 
 **Important:** in-place `git reset --hard` + `composer install` is *not atomic*.
@@ -158,13 +158,13 @@ Check `git status --short`, `git ls-files .env Storage`, `.gitignore`, vendor,
 node_modules, secrets and uploads before push. `.gitignore` does not untrack
 previously committed files; use `git rm --cached` after review when needed.
 
-Docker port convention `3ppss` for project `02`:
-HTTP=30201, HTTPS=30202, MySQL=30203, PHP-FPM=30204, PostgreSQL=30205, Redis=30206
+Docker port convention `3ppss` for project `01`:
+HTTP=30101, HTTPS=30102, MySQL=30103, PHP-FPM=30104, PostgreSQL=30105, Redis=30106
 Publish only ports that genuinely need a host mapping.
 
 ## 8. Final verification checklist
 
-- [ ] GitHub `main`/`develop`, private repository and rulesets validated.
+- [ ] GitHub `main`/`develop`, repository visibility and rulesets validated.
 - [ ] Backups made and Nginx/docroot verified.
 - [ ] Deploy user and checkout-parent permissions checked.
 - [ ] Separate SSH keys created; GitHub host fingerprint verified.
