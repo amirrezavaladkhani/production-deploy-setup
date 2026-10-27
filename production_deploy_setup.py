@@ -80,18 +80,18 @@ class Config:
 
 def collect() -> Config:
     print("\nProject settings (press Enter to accept a suggested value):")
-    org = validate("organization", ask("GitHub organization", "nasma-tech"), r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
+    org = validate("organization", ask("GitHub owner (user or organization)"), r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
     repo = validate("repository", ask("Repository name"), r"[A-Za-z0-9_.-]+")
     slug = validate("project slug", ask("Project slug", repo.lower().replace("_", "-")), r"[a-z0-9]+(?:-[a-z0-9]+)*")
     label = validate("server label", ask("Server label", "prod-01"), r"[A-Za-z0-9._-]+")
     domain = validate("domain", ask("Project domain"), r"[A-Za-z0-9.-]+")
-    project_dir = absolute_path("project directory", ask("Absolute project checkout path", f"/var/www/php/{domain}/sales"))
+    project_dir = absolute_path("project directory", ask("Absolute project checkout path", f"/var/www/php/{domain}"))
     script_path = absolute_path("deployment script path", ask("Absolute deployment script path", f"/var/www/scripts/deploy-{slug}.sh"))
     alias = validate("SSH alias", ask("GitHub SSH alias", f"github-{slug}"), r"[A-Za-z0-9_-]+")
     port = int(ask("Server SSH port", "22"))
     if not 1 <= port <= 65535:
         raise ValueError("SSH port must be between 1 and 65535")
-    docker_no = validate("Docker project number", ask("Docker project number (00-99)", "02"), r"[0-9]{2}")
+    docker_no = validate("Docker project number", ask("Docker project number (00-99)", "01"), r"[0-9]{2}")
     return Config(org, repo, slug, label, domain, project_dir, script_path, alias, port, docker_no)
 
 
@@ -180,7 +180,7 @@ def guide(c: Config, applied: bool = False) -> str:
 
 | Setting | Value |
 |---|---|
-| GitHub repository | `{c.org}/{c.repo}` (private) |
+| GitHub repository | `{c.org}/{c.repo}` (private recommended; configurable) |
 | Project slug | `{c.slug}` |
 | Server | `{c.server_label}` |
 | Domain | `{c.domain}` |
@@ -194,7 +194,7 @@ def guide(c: Config, applied: bool = False) -> str:
 
 ## 1. Configure GitHub repository (manual)
 
-1. Create a **private** repository named `{c.org}/{c.repo}`.
+1. Create a repository (private recommended for production code) named `{c.org}/{c.repo}`.
 2. Create `main` and `develop` branches; set `main` as default.
 3. Import/review your rulesets: targets, enforcement, PR reviews, no force push,
    no deletion, and bypass permissions. Use a separate `pull_request` workflow
@@ -338,7 +338,7 @@ Publish only ports that genuinely need a host mapping.
 
 ## 8. Final verification checklist
 
-- [ ] GitHub `main`/`develop`, private repository and rulesets validated.
+- [ ] GitHub `main`/`develop`, repository visibility and rulesets validated.
 - [ ] Backups made and Nginx/docroot verified.
 - [ ] Deploy user and checkout-parent permissions checked.
 - [ ] Separate SSH keys created; GitHub host fingerprint verified.
