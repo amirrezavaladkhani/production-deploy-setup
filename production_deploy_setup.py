@@ -117,19 +117,28 @@ echo "=== Deploy started: $PROJECT_SLUG ==="
 cd "$PROJECT_DIR"
 [[ "$(git remote get-url origin)" == "$EXPECTED_ORIGIN" ]] || {{ echo "Unexpected origin"; exit 1; }}
 [[ -z "$(git ls-files -- .env)" ]] || {{ echo "Tracked .env; refusing"; exit 1; }}
-[[ -z "$(git ls-files -- Storage)" ]] || {{ echo "Tracked Storage entries detected; review required"; exit 1; }}
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || {{ echo "Tracked changes detected; refusing"; exit 1; }}
 [[ "$(git branch --show-current)" == main ]] || {{ echo "Not on main; refusing"; exit 1; }}
-[[ -f composer.lock ]] || {{ echo "composer.lock missing; refusing"; exit 1; }}
 
-# Safety gate: neither staged nor untracked paths should be displaced by the incoming commit.
+# Fast-forward updates tracked files (including tracked Storage files).
+# Local untracked/ignored files remain in place. Conflicts abort instead of
+# deleting local files. Never use git clean or git reset --hard here.
 git fetch --prune origin main
-if [[ -n "$(git ls-files -o --exclude-standard)" ]]; then
-    echo "Untracked non-ignored files present; review before deploying"; exit 1
-fi
-# Compare runtime files and verify backup/cutover before relying on reset.
-git reset --hard origin/main
-[[ -f composer.lock ]] || {{ echo "composer.lock missing after reset"; exit 1; }}
+# Git may overwrite ignored files if a new tracked path uses their name.
+# Explicitly guard all local-only paths (including ignored uploads).
+git ls-tree -rz --name-only origin/main | while IFS= read -r -d '' incoming; do
+    if ! git ls-files --error-unmatch -- "$incoming" >/dev/null 2>&1; then
+        if [[ -e "$incoming" || -L "$incoming" ]]; then
+            echo "Incoming Git path conflicts with local-only file: $incoming" >&2
+            exit 1
+        fi
+    fi
+done
+git merge --ff-only origin/main || {{
+    echo "Fast-forward failed (history, tracked edits, or path collision); review manually";
+    exit 1;
+}}
+[[ -f composer.lock ]] || {{ echo "composer.lock missing after update"; exit 1; }}
 composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 composer check-platform-reqs --no-dev
 echo "Deployed commit: $(git rev-parse --short HEAD)"
@@ -145,6 +154,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions: {}
 
@@ -201,21 +211,23 @@ def guide(c: Config, applied: bool = False) -> str:
    for mandatory pre-merge status checks.
 4. Allow approved Actions under Settings > Actions > General.
 5. Work in feature branches -> `develop`, then open reviewed PRs into `main`.
+6. A push/merge to `main` triggers a real deployment. Do not merge the workflow
+   until the checkout, `.env`, Storage permissions, backups, and PHP are ready.
 
 ## 2. Prepare the Linux server (administrator)
 
 Commands below are examples; inspect existing users, ownership and paths first.
 
 ```bash
-id {c.deploy_user} || sudo adduser --disabled-password --gecos '' {c.deploy_user}
+id {c.deploy_user} || adduser --disabled-password --gecos '' {c.deploy_user}
 git --version
 composer --version
 php -v
-sudo install -d -o {c.deploy_user} -g {c.deploy_user} -m 700 {c.home}/.ssh
-sudo install -d -o root -g root -m 755 {c.script_path.parent}
+install -d -o {c.deploy_user} -g {c.deploy_user} -m 700 {c.home}/.ssh
+install -d -o root -g root -m 755 {c.script_path.parent}
 namei -l {shlex.quote(str(c.project_dir))}
 # Apply an ACL only on the specific parent if deploy must create a new checkout:
-# sudo setfacl -m u:{c.deploy_user}:rwx {shlex.quote(str(c.project_dir.parent))}
+# setfacl -m u:{c.deploy_user}:rwx {shlex.quote(str(c.project_dir.parent))}
 ```
 
 Never change ownership of all `/var/www`, and never use `chmod -R 777`.
@@ -228,10 +240,8 @@ Back up code, uploads and database before a cutover.
 Generate the key as `{c.deploy_user}` without overwriting existing keys:
 
 ```bash
-sudo -iu {c.deploy_user}
-umask 077
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-ssh-keygen -t ed25519 -C '{c.server_label}/{c.repo}/server-to-github' -f {c.read_key} -N ''
+# Run this with root; never print the private key.
+runuser -u {c.deploy_user} -- ssh-keygen -t ed25519 -C '{c.server_label}/{c.repo}/server-to-github' -f {c.read_key} -N ''
 cat {c.read_key}.pub
 ```
 
@@ -254,8 +264,8 @@ Host {c.ssh_alias}
 Test access *after* trusting GitHub's verified host key and adding the deploy key:
 
 ```bash
-sudo -iu {c.deploy_user} ssh -T {c.ssh_alias}
-sudo -iu {c.deploy_user} git ls-remote {c.origin} HEAD
+runuser -u {c.deploy_user} -- ssh -T {c.ssh_alias}
+runuser -u {c.deploy_user} -- git ls-remote {c.origin} HEAD
 ```
 
 ## 4. First checkout (manual safety checkpoint)
@@ -265,7 +275,17 @@ Do **not** clone or reset into an occupied production directory.
 If the target is new and its parent is writable by deploy:
 
 ```bash
-sudo -iu {c.deploy_user} git clone --branch main --single-branch {c.origin} {shlex.quote(str(c.project_dir))}
+PROJECT_DIR={shlex.quote(str(c.project_dir))}
+REPO={shlex.quote(c.origin)}
+# An existing EMPTY destination is safe to remove; never delete a nonempty one.
+if [ -d "$PROJECT_DIR" ] && [ -z "$(ls -A "$PROJECT_DIR")" ]; then
+    rmdir "$PROJECT_DIR" || echo "Could not remove empty destination"
+fi
+if [ ! -e "$PROJECT_DIR" ]; then
+    runuser -u {c.deploy_user} -- git clone --branch main "$REPO" "$PROJECT_DIR"
+else
+    echo "Destination exists; inspect it before cloning"
+fi
 ```
 
 Transfer `.env` and runtime data from backup, then set permissions explicitly.
@@ -276,7 +296,7 @@ Do not run the deploy script until `main` contains real deployable code.
 ## 5. GitHub Actions -> server (independent SSH key)
 
 ```bash
-sudo -iu {c.deploy_user}
+runuser -u {c.deploy_user} --
 umask 077
 ssh-keygen -t ed25519 -C '{c.org}/{c.repo}/actions-to-{c.server_label}' -f {c.actions_key} -N ''
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
@@ -297,8 +317,34 @@ Set repository **Actions secrets** (never commit the private key):
 Find the server's fingerprint as administrator (verify out of band):
 
 ```bash
-sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+for key in /etc/ssh/ssh_host_*_key.pub; do
+    ssh-keygen -lf "$key" -E sha256
+done
+sshd -T | grep -E '^(hostkey|port|listenaddress) ' 
 ```
+
+Only copy `SHA256:...` from the selected fingerprint line, not the bit length,
+key comment or algorithm label. The Action checks the SSH *host* key chosen
+for the connection; when multiple host key algorithms are active, confirm the
+actual host key presented at the `HOST`/`PORT` from the runner network.
+Check `HOST` and `PORT` when seeing `ssh: host key fingerprint mismatch`.
+Do **not** disable fingerprint verification. To diagnose the destination, use
+a temporary GitHub Actions step (this reads untrusted public keys, not proof):
+
+```yaml
+- name: Inspect offered SSH host keys
+  env:
+    TARGET_HOST: ${{{{ secrets.HOST }}}}
+    TARGET_PORT: ${{{{ secrets.PORT }}}}
+  run: |
+    ssh-keyscan -T 10 -p "$TARGET_PORT" "$TARGET_HOST" 2>/dev/null | ssh-keygen -lf - -E sha256
+```
+
+Compare this output independently with the server's trusted local host keys.
+For a **safe SSH-only smoke test**, temporarily change the action's script to
+`whoami; hostname; pwd` *before* enabling the real deployment and merge via PR.
+Expected SSH user is `{c.deploy_user}`. Re-enable the deployment command only
+after all runtime prerequisites are checked.
 
 **Only after** the Secret is saved and tested, securely remove the temporary
 Actions **private** key from the server. Keep its public key authorized.
@@ -307,7 +353,7 @@ Actions **private** key from the server. Keep its public key authorized.
 
 Place the generated deployment Bash script at `{c.script_path}`, owned by root,
 mode 755. It executes as `deploy`; it uses flock, checks tracked changes,
-checks `.env`/Storage, verifies origin, fetches `main`, and runs Composer.
+checks `.env`/Storage, verifies origin, fast-forwards `main`, and runs Composer.
 Do not use `sudo` inside it. The script is designed for host PHP/Composer,
 not a Docker-only application. Composer project scripts need review.
 
@@ -317,26 +363,64 @@ merge it via PR into `main`. It runs on push to `main` only.
 Example syntax check and controlled test:
 
 ```bash
-sudo -u {c.deploy_user} bash -n {shlex.quote(str(c.script_path))}
+runuser -u {c.deploy_user} -- bash -n {shlex.quote(str(c.script_path))}
 # ONLY after backups and an explicit decision to deploy:
-# sudo -iu {c.deploy_user} bash {shlex.quote(str(c.script_path))}
+# runuser -u {c.deploy_user} -- bash {shlex.quote(str(c.script_path))}
 ```
 
-**Important:** in-place `git reset --hard` + `composer install` is *not atomic*.
+**Important:** in-place Git fast-forward + `composer install` is *not atomic*.
 If Composer fails, the live site may be partially updated. For critical sites,
 use versioned releases, atomic symlink switches and a tested rollback path.
 
 ## 7. Git hygiene and Docker ports
 
+Storage policy: Git-tracked Storage files are deployed and updated from Git;
+server-only files that remain untracked/ignored are preserved. **Do not edit
+Git-tracked Storage files on the production server**: the deployment refuses
+local tracked modifications. A file from a future Git commit that collides
+with a server-only file causes fast-forward to refuse instead of silently
+replacing it. `.gitignore` only governs *untracked* paths; it does not protect
+a file already in Git. Decide which Storage subpaths are assets vs uploads.
+
 Check `git status --short`, `git ls-files .env Storage`, `.gitignore`, vendor,
-node_modules, secrets and uploads before push. `.gitignore` does not untrack
-previously committed files; use `git rm --cached` after review when needed.
+node_modules, secrets and uploads before push. If you want previously tracked
+uploads to become server-only, back them up and explicitly use `git rm --cached`
+from a development checkout after review. Never run `git clean -fdx`.
 
 Docker port convention `3ppss` for project `{c.docker_no}`:
 {ports}
 Publish only ports that genuinely need a host mapping.
 
-## 8. Final verification checklist
+## 8. Troubleshooting reference (root SSH shell)
+
+SSH authorization denied (`Permission denied (publickey)`):
+
+```bash
+runuser -u {c.deploy_user} -- ssh -G {c.ssh_alias} | grep -E '^(user|hostname|identityfile|identitiesonly) '
+runuser -u {c.deploy_user} -- ssh -vT {c.ssh_alias}
+runuser -u {c.deploy_user} -- git ls-remote {c.origin} HEAD
+```
+
+`GitHub Actions` handshake mismatch: compare server host key fingerprints;
+verify `HOST`/`PORT`, and identify the offered algorithm. **Never confuse the
+GitHub repository Deploy Key with the target server SSH host key.**
+
+After clone, inspect the checkout without printing secrets:
+
+```bash
+runuser -u {c.deploy_user} -- git -C {shlex.quote(str(c.project_dir))} status
+runuser -u {c.deploy_user} -- git -C {shlex.quote(str(c.project_dir))} remote -v
+ls -ld {shlex.quote(str(c.project_dir))}
+for item in .env Storage composer.json composer.lock; do
+    test -e {shlex.quote(str(c.project_dir))}/"$item" && echo "[OK] $item" || echo "[MISSING] $item"
+done
+```
+
+Do not use `exit 1` directly when pasting a one-off snippet into your
+interactive root shell; this can close the entire SSH terminal. All install
+examples here avoid a top-level `exit`.
+
+## 9. Final verification checklist
 
 - [ ] GitHub `main`/`develop`, repository visibility and rulesets validated.
 - [ ] Backups made and Nginx/docroot verified.
@@ -344,7 +428,7 @@ Publish only ports that genuinely need a host mapping.
 - [ ] Separate SSH keys created; GitHub host fingerprint verified.
 - [ ] Read-only GitHub Deploy Key registered; `git ls-remote` succeeds.
 - [ ] Server host fingerprint verified and Actions secrets registered.
-- [ ] `.env`, Storage and permissions preserved; no runtime files tracked.
+- [ ] `.env` untracked; tracked Storage assets intentional; server-only uploads preserved.
 - [ ] `composer.lock` exists on `main` and Composer scripts were reviewed.
 - [ ] Deploy script and `.github/workflows/deploy.yml` paths match.
 - [ ] PR `develop -> main` merged and Actions result inspected.
